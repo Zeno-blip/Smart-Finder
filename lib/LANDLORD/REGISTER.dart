@@ -1,12 +1,15 @@
 // register.dart
 import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:crypto/crypto.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:smart_finder/LANDLORD/LOGIN.dart';
-import 'package:smart_finder/LANDLORD/VERIFICATION.dart'; // <— add this import
+import 'package:smart_finder/LANDLORD/VERIFICATION.dart';
 
 class RegisterL extends StatefulWidget {
   const RegisterL({super.key});
@@ -29,7 +32,26 @@ class _RegisterState extends State<RegisterL> {
   String _selectedGender = 'Male';
   bool _loading = false;
 
+  PlatformFile? _barangayClearance;
+  PlatformFile? _businessPermit;
+  PlatformFile? _validId1;
+  PlatformFile? _validId2;
+
   final supabase = Supabase.instance.client;
+
+  @override
+  void dispose() {
+    _firstNameController.dispose();
+    _lastNameController.dispose();
+    _birthdayController.dispose();
+    _addressController.dispose();
+    _apartmentNameController.dispose();
+    _contactNumberController.dispose();
+    _emailController.dispose();
+    _passwordController.dispose();
+    _confirmPasswordController.dispose();
+    super.dispose();
+  }
 
   Future<void> _selectDate() async {
     final DateTime? picked = await showDatePicker(
@@ -46,6 +68,9 @@ class _RegisterState extends State<RegisterL> {
     }
   }
 
+  void _msg(String m) =>
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
+
   Future<void> _sendOtp({
     required String email,
     required String userId,
@@ -59,6 +84,110 @@ class _RegisterState extends State<RegisterL> {
       throw Exception("Failed to send code: ${res.data}");
     }
   }
+
+  // ---------- NEW: ensure user has landlord role for RLS ----------
+  Future<void> _ensureLandlordRole(String userId) async {
+    try {
+      // If you have a unique constraint on (user_id, role), upsert avoids duplicates
+      await supabase.from('user_roles').upsert({
+        'user_id': userId,
+        'role': 'landlord',
+      }, onConflict: 'user_id,role');
+    } catch (_) {
+      // If your schema doesn’t support onConflict, fall back to insert and ignore dup errors
+      try {
+        await supabase.from('user_roles').insert({
+          'user_id': userId,
+          'role': 'landlord',
+        });
+      } catch (e) {
+        // ignore if it already exists
+      }
+    }
+  }
+
+  // ------------------ Document picking & upload ------------------
+
+  Future<void> _pickDoc(void Function(PlatformFile?) assign) async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['jpg', 'jpeg', 'png', 'pdf', 'heic', 'webp'],
+      withData: true,
+    );
+    if (result != null && result.files.isNotEmpty) {
+      final file = result.files.first;
+      if (file.bytes == null) {
+        _msg('Failed to read file bytes. Try another file.');
+        return;
+      }
+      assign(file);
+      setState(() {});
+    }
+  }
+
+  Future<void> _uploadOneDoc({
+    required String userId,
+    required PlatformFile file,
+    required String docType,
+  }) async {
+    final Uint8List bytes = file.bytes!;
+    String clean(String s) => s.replaceAll(RegExp(r'[^a-zA-Z0-9._-]+'), '_');
+
+    final ts = DateTime.now().toUtc().millisecondsSinceEpoch;
+    final original = file.name;
+    final path = '$userId/${ts}_${clean(docType)}_${clean(original)}';
+
+    await supabase.storage
+        .from('landlord-docs')
+        .uploadBinary(
+          path,
+          bytes,
+          fileOptions: const FileOptions(
+            contentType: 'application/octet-stream',
+            upsert: true,
+          ),
+        );
+
+    await supabase.from('landlord_documents').insert({
+      'user_id': userId,
+      'doc_type': docType,
+      'storage_path': path,
+      'original_filename': original,
+    });
+  }
+
+  Future<void> _uploadAllDocs(String userId) async {
+    if (_barangayClearance != null) {
+      await _uploadOneDoc(
+        userId: userId,
+        file: _barangayClearance!,
+        docType: 'barangay_clearance',
+      );
+    }
+    if (_businessPermit != null) {
+      await _uploadOneDoc(
+        userId: userId,
+        file: _businessPermit!,
+        docType: 'business_permit',
+      );
+    }
+    if (_validId1 != null) {
+      await _uploadOneDoc(
+        userId: userId,
+        file: _validId1!,
+        docType: 'valid_id',
+      );
+    }
+    if (_validId2 != null) {
+      await _uploadOneDoc(
+        userId: userId,
+        file: _validId2!,
+        docType: 'valid_id_2',
+      );
+    }
+  }
+
+  // ------------------ Registration ------------------
 
   Future<void> _registerLandlord() async {
     final firstName = _firstNameController.text.trim();
@@ -90,7 +219,6 @@ class _RegisterState extends State<RegisterL> {
     setState(() => _loading = true);
 
     try {
-      // Is there already an app-level user for this email?
       final existingUser = await supabase
           .from('users')
           .select('id, email, role')
@@ -119,15 +247,20 @@ class _RegisterState extends State<RegisterL> {
         await supabase.from('users').upsert({
           'id': userId,
           'full_name': '$firstName $lastName',
+          'first_name': firstName,
+          'last_name': lastName,
           'email': email,
           'phone': phone.isEmpty ? null : phone,
           'password': hashed,
           'role': 'landlord',
-          'is_verified': false, // <-- start unverified
+          'is_verified': false,
           'created_at': DateTime.now().toUtc().toIso8601String(),
         }, onConflict: 'id');
 
-        // 3) landlord_profile (1:1 on user_id) — use upsert for idempotency
+        // 2.5) **Make sure RLS sees them as landlord**
+        await _ensureLandlordRole(userId);
+
+        // 3) landlord_profile (RLS now allows this)
         await supabase.from('landlord_profile').upsert({
           'user_id': userId,
           'first_name': firstName,
@@ -139,7 +272,7 @@ class _RegisterState extends State<RegisterL> {
           'contact_number': phone.isEmpty ? null : phone,
         }, onConflict: 'user_id');
       } else {
-        // Email exists – require password to prove ownership
+        // Existing email – sign in to prove ownership
         final signInRes = await supabase.auth.signInWithPassword(
           email: email,
           password: password,
@@ -153,11 +286,13 @@ class _RegisterState extends State<RegisterL> {
         }
         userId = authUser.id;
 
-        // Keep users row in sync (still unverified)
+        // Keep users row in sync
         final hashed = sha256.convert(utf8.encode(password)).toString();
         await supabase.from('users').upsert({
           'id': userId,
           'full_name': '$firstName $lastName',
+          'first_name': firstName,
+          'last_name': lastName,
           'email': email,
           'phone': phone.isEmpty ? null : phone,
           'password': hashed,
@@ -166,6 +301,10 @@ class _RegisterState extends State<RegisterL> {
           'created_at': DateTime.now().toUtc().toIso8601String(),
         }, onConflict: 'id');
 
+        // 2.5) **Ensure landlord role for RLS**
+        await _ensureLandlordRole(userId);
+
+        // landlord_profile
         await supabase.from('landlord_profile').upsert({
           'user_id': userId,
           'first_name': firstName,
@@ -177,11 +316,14 @@ class _RegisterState extends State<RegisterL> {
           'contact_number': phone.isEmpty ? null : phone,
         }, onConflict: 'user_id');
 
-        // immediately sign out; we’ll log in after verification
+        // sign out; they’ll verify via OTP next
         await supabase.auth.signOut();
       }
 
-      // 4) Send OTP email (Edge Function with SendGrid)
+      // 4) Optional documents
+      await _uploadAllDocs(userId);
+
+      // 5) Send OTP
       await _sendOtp(
         email: email,
         userId: userId,
@@ -189,7 +331,6 @@ class _RegisterState extends State<RegisterL> {
       );
 
       if (!mounted) return;
-      // 5) Go to Verification screen
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(
@@ -207,8 +348,7 @@ class _RegisterState extends State<RegisterL> {
     }
   }
 
-  void _msg(String m) =>
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
+  // ------------------ UI ------------------
 
   @override
   Widget build(BuildContext context) {
@@ -325,6 +465,48 @@ class _RegisterState extends State<RegisterL> {
                   obscureText: true,
                 ),
 
+                const SizedBox(height: 20),
+
+                Row(
+                  children: [
+                    Expanded(
+                      child: _uploadButton(
+                        label: 'Barangay Clearance',
+                        picked: _barangayClearance,
+                        onPick: () => _pickDoc((f) => _barangayClearance = f),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _uploadButton(
+                        label: 'Business Permit',
+                        picked: _businessPermit,
+                        onPick: () => _pickDoc((f) => _businessPermit = f),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _uploadButton(
+                        label: 'Valid ID',
+                        picked: _validId1,
+                        onPick: () => _pickDoc((f) => _validId1 = f),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _uploadButton(
+                        label: 'Valid ID 2',
+                        picked: _validId2,
+                        onPick: () => _pickDoc((f) => _validId2 = f),
+                      ),
+                    ),
+                  ],
+                ),
+
                 const SizedBox(height: 30),
                 SizedBox(
                   width: double.infinity,
@@ -381,6 +563,31 @@ class _RegisterState extends State<RegisterL> {
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _uploadButton({
+    required String label,
+    required VoidCallback onPick,
+    PlatformFile? picked,
+  }) {
+    return SizedBox(
+      height: 50,
+      child: ElevatedButton.icon(
+        onPressed: onPick,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: Colors.grey[300],
+          foregroundColor: Colors.black,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+        ),
+        icon: const Icon(Icons.upload_file),
+        label: Text(
+          picked == null ? label : '${label} • ${picked.name}',
+          overflow: TextOverflow.ellipsis,
         ),
       ),
     );

@@ -10,7 +10,7 @@ import 'APARTMENT.dart';
 import 'TENANTS.dart';
 import 'TOTALROOM.dart';
 import 'LOGIN.dart';
-import 'EDITROOM.dart';
+// import 'EDITROOM.dart'; // ← removed
 import 'ROOMINFO.dart';
 import 'ADDROOM.dart';
 
@@ -530,8 +530,6 @@ class _TimelineState extends State<Timeline> {
     final String location = (apartment['location'] ?? "Unknown location")
         .toString();
 
-    // We no longer show the long "Rejected – Edit to resubmit" button.
-    // Keep buttons for other statuses.
     String statusButtonText;
     if (status == 'published') {
       statusButtonText = "Published";
@@ -585,7 +583,7 @@ class _TimelineState extends State<Timeline> {
                       borderRadius: BorderRadius.circular(6),
                     ),
                     child: Text(
-                      status.toUpperCase(), // <-- keeps REJECTED badge
+                      status.toUpperCase(),
                       style: const TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.bold,
@@ -624,7 +622,6 @@ class _TimelineState extends State<Timeline> {
                   const SizedBox(height: 10),
                   Row(
                     children: [
-                      // Show the left status button only when NOT rejected
                       if (status != 'rejected') ...[
                         ElevatedButton(
                           onPressed: null,
@@ -636,20 +633,7 @@ class _TimelineState extends State<Timeline> {
                         ),
                         const SizedBox(width: 8),
                       ],
-                      ElevatedButton(
-                        onPressed: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(builder: (_) => const EditRoom()),
-                          );
-                        },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF003049),
-                          foregroundColor: Colors.white,
-                        ),
-                        child: const Text("Edit"),
-                      ),
-                      const SizedBox(width: 8),
+                      // EDIT button removed
                       ElevatedButton(
                         onPressed: () {
                           showDialog(
