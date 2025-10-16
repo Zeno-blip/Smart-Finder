@@ -377,6 +377,113 @@ class _TenantApartmentState extends State<TenantApartment> {
     );
   }
 
+  // ---------- Utility functions (ADDED) ----------
+
+  /// Programmatically refresh the list (e.g., pull-to-refresh or Retry)
+  Future<void> refreshRooms() async => _fetchRooms();
+
+  /// Clear the current search text and update the list.
+  void clearSearch() {
+    _searchCtrl.clear();
+    setState(() {}); // triggers _filteredRooms recalculation
+  }
+
+  /// Format pesos (₱) safely with no decimals.
+  String formatPrice(num? v) {
+    final n = (v ?? 0).toInt();
+    return '₱ $n / Month';
+  }
+
+  /// Smoothly scrolls to top of the list.
+  void scrollToTop() {
+    if (!_scrollController.hasClients) return;
+    _scrollController.animateTo(
+      0,
+      duration: const Duration(milliseconds: 350),
+      curve: Curves.easeOut,
+    );
+  }
+
+  /// Go to a specific page index (bounds-checked).
+  void goToPage(int index, int totalPages) {
+    final safe = index.clamp(0, totalPages - 1);
+    setState(() {
+      currentPage = safe;
+    });
+    scrollToTop();
+  }
+
+  /// Next page (if possible).
+  void nextPage(int totalPages) {
+    if (currentPage < totalPages - 1) {
+      goToPage(currentPage + 1, totalPages);
+    }
+  }
+
+  /// Previous page (if possible).
+  void prevPage() {
+    if (currentPage > 0) {
+      goToPage(currentPage - 1, currentPage + 1); // totalPages not needed here
+    }
+  }
+
+  /// Toggle favorite state for a room ID.
+  void toggleFavorite(String roomId) {
+    setState(() {
+      _favorite[roomId] = !(_favorite[roomId] ?? false);
+    });
+  }
+
+  /// Toggle bookmark state for a room ID (with a snackbar message).
+  void toggleBookmark(BuildContext context, String roomId) {
+    final newVal = !(_bookmark[roomId] ?? false);
+    setState(() => _bookmark[roomId] = newVal);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(newVal ? 'Apartment bookmarked!' : 'Bookmark removed.'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  /// Navigate to a TenantRoomInfo for a given room item.
+  void openRoomInfo(_RoomItem item) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => TenantRoomInfo(
+          roomId: item.id,
+          titleHint: item.title,
+          addressHint: item.address,
+          monthlyHint: item.monthly,
+        ),
+      ),
+    );
+  }
+
+  /// Build a reusable ListTile for simple settings/actions (optional helper).
+  Widget buildActionTile({
+    required IconData icon,
+    required String title,
+    VoidCallback? onTap,
+  }) {
+    return ListTile(
+      leading: Icon(icon, color: Colors.white),
+      title: Text(title, style: const TextStyle(color: Colors.white)),
+      onTap: onTap,
+    );
+  }
+
+  /// Safe text: returns a fallback if the given string is empty/null.
+  String safeText(String? v, [String fallback = '—']) {
+    if (v == null) return fallback;
+    final s = v.trim();
+    return s.isEmpty ? fallback : s;
+  }
+
+  /// Quick helper to know if an image URL is usable.
+  bool hasImage(String? url) => url != null && url.trim().isNotEmpty;
+
   // ---------- UI ----------
 
   @override
@@ -502,41 +609,11 @@ class _TenantApartmentState extends State<TenantApartment> {
                                   imageUrl: item.imageUrl,
                                   isFavorited: fav,
                                   isBookmarked: bm,
-                                  onFavoriteToggle: () {
-                                    setState(() {
-                                      _favorite[item.id] =
-                                          !(_favorite[item.id] ?? false);
-                                    });
-                                  },
-                                  onBookmarkPressed: () {
-                                    setState(() {
-                                      _bookmark[item.id] =
-                                          !(_bookmark[item.id] ?? false);
-                                    });
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(
-                                        content: Text(
-                                          (_bookmark[item.id] ?? false)
-                                              ? 'Apartment bookmarked!'
-                                              : 'Bookmark removed.',
-                                        ),
-                                        duration: const Duration(seconds: 2),
-                                      ),
-                                    );
-                                  },
-                                  onOpen: () {
-                                    Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (_) => TenantRoomInfo(
-                                          roomId: item.id,
-                                          titleHint: item.title,
-                                          addressHint: item.address,
-                                          monthlyHint: item.monthly,
-                                        ),
-                                      ),
-                                    );
-                                  },
+                                  onFavoriteToggle: () =>
+                                      toggleFavorite(item.id),
+                                  onBookmarkPressed: () =>
+                                      toggleBookmark(context, item.id),
+                                  onOpen: () => openRoomInfo(item),
                                 );
                               } else {
                                 return _buildPagination(totalPages);
@@ -610,14 +687,7 @@ class _TenantApartmentState extends State<TenantApartment> {
           runSpacing: 10,
           children: [
             IconButton(
-              onPressed: currentPage > 0
-                  ? () {
-                      setState(() {
-                        currentPage--;
-                        _scrollController.jumpTo(0);
-                      });
-                    }
-                  : null,
+              onPressed: currentPage > 0 ? () => prevPage() : null,
               icon: const Icon(Icons.chevron_left),
               iconSize: 30,
               color: Colors.white,
@@ -625,12 +695,7 @@ class _TenantApartmentState extends State<TenantApartment> {
             ...List.generate(totalPages, (index) {
               final isSelected = index == currentPage;
               return GestureDetector(
-                onTap: () {
-                  setState(() {
-                    currentPage = index;
-                    _scrollController.jumpTo(0);
-                  });
-                },
+                onTap: () => goToPage(index, totalPages),
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 300),
                   width: 40,
@@ -666,12 +731,7 @@ class _TenantApartmentState extends State<TenantApartment> {
             }),
             IconButton(
               onPressed: currentPage < totalPages - 1
-                  ? () {
-                      setState(() {
-                        currentPage++;
-                        _scrollController.jumpTo(0);
-                      });
-                    }
+                  ? () => nextPage(totalPages)
                   : null,
               icon: const Icon(Icons.chevron_right),
               iconSize: 30,
